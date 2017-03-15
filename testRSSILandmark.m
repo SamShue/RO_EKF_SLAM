@@ -5,4 +5,4 @@ close all;
 fclose(instrfind);
 
 % RSSI Landmark Struct
-s = getNodeStruct();
+s = getLandmarkStruct();
