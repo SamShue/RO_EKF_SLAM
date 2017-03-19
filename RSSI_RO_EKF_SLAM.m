@@ -8,9 +8,9 @@ rosshutdown                         %close current ros incase it is already init
 % setenv('ROS_IP', '192.168.1.104');
 
 % Robot network variables
-ipaddress = 'http://192.168.1.13:11311';         %define ipadress of turtlebot
+ipaddress = 'http://192.168.1.16:11311';         %define ipadress of turtlebot
 setenv('ROS_MASTER_URI', ipaddress);
-rosinit(ipaddress,'NodeHost','192.168.1.133')                  %initate ros using turtlebot IP
+rosinit(ipaddress,'NodeHost','192.168.1.132')                  %initate ros using turtlebot IP
 
 %odom = rossubscriber('/robot_pose_ekf/odom_combined');  %initialize a subscriber node to odomotry data
 odom = rossubscriber('/odom');
@@ -19,14 +19,20 @@ odom = rossubscriber('/odom');
 C = 0.2;    % Process Noise Constant
 Rc = 1;   % Measurement Noise Constant
 
-landmark_list=[]; %this is an input to the function and can be either empty or full of stuff
+lmrk=myClass(); %this is an input to the function and can be either empty or full of stuff
 ekf_init = 0;
 odomTS = 0;
 laserTS = 0;
+
 while(1)
     % Receive ROS Topics
     %======================================================================
+
+    lmrk.getSerialData(lmrk);
+
+  
     odomData = receive(odom);
+    
     % End receive ROS topics
     %----------------------------------------------------------------------
     
@@ -56,15 +62,22 @@ while(1)
     %======================================================================
 
     if(~exist('x'))
+   
         oldOdomPose = odomPose;
         oldOdomData = odomData;
         % State Vector
-        x = [0,0,0];
+        x=zeros(1,3+size(lmrk.landmark,2)*2);
+        for jj=1:size(lmrk.landmark,2)
+            x((jj-1)*2 + 4) = lmrk.landmark(jj).pos(1);% + normrnd(0,0.1);
+            x((jj-1)*2 + 5) = lmrk.landmark(jj).pos(2);% + normrnd(0,0.1);           
+        end
+        
         % Covariance Matrix
         P = eye(length(x)).*0.1; 
         P(1,1) = 0.1; P(2,2) = 0.1; P(3,3) = 0.1;
         u = [0, 0];
     else
+    
         % Get control vector (change in linear displacement and rotation)to
         % estimate current pose of the robot
         delta_D = sqrt((odomPose(1) - oldOdomPose(1))^2 + (odomPose(2) - oldOdomPose(2))^2);
@@ -84,66 +97,65 @@ while(1)
     end
     
     % Search for landmarks
-    observed_LL = getLandmarkRSSI(landmark_list);
-
+  
+    observed_LL = lmrk.getLandmarkRSSI(lmrk);
+   
     % Apply measurement update in EKF if landmarks are observed
     if(~isempty(observed_LL))
-        [numOfLandmarks ~] = size(observed_LL);
+       
+        [numOfLandmarks] = size(observed_LL,1);
         for ii = 1:numOfLandmarks
             % Measurement vector
-            z = [observed_LL(ii,1), observed_LL(ii,2)];
+            z = observed_LL(ii,1);
             % Measurement noise covariance matrix
-            R = zeros(2,2); R(1,1) = observed_LL(ii,1)*Rc; R(2,2) = observed_LL(ii,2)*Rc;
+            R = observed_LL(ii,1)*Rc;
             % Landmark index
-            idx = observed_LL(ii,3);
+            idx = observed_LL(ii,2);
         
             % Apply EKF measurement update
             [x,P] = RO_EKF_SLAM_Measurement(x,P,z,R,idx);
-            updateLandmarkListRSSI(landmark_list,observed_LL);
+            lmrk.updateLandmarkListRSSI(lmrk,observed_LL);
         end
+    
     end
     % End estimate robot's pose
     %----------------------------------------------------------------------
         
     % Plot Junk
     %=======================================================================
-    % set(gcf,'Visible','on');
-    % set(0,'DefaultFigureVisible','on');
     clf; hold on;
-
-    scatter(x(1),x(2),'red','o');
+    % Plot robot
+  
+    
+    drawRobot(x(1),x(2),x(3),0.25);
+ 
+    % Plot absolute landmarks
+    colors=['r','m','y','c'];
+    for ii=1:size(lmrk.landmark,2)
+       scatter(lmrk.landmark(ii).pos(1),lmrk.landmark(ii).pos(2),colors(ii)); 
+    end
+    
+    % Plot filtered landmarks
     for ii = 1:((length(x)-3)/2)
-        scatter(x((ii-1)*2 + 4),x((ii-1)*2 + 5),'blue','x');
+        scatter(x((ii-1)*2 + 4),x((ii-1)*2 + 5),colors(ii),'x');
     end
+   
+    %Plot observed landmarks incorperating distance
+     if(~isempty(observed_LL))      
+        for(mm=1:size(observed_LL,1))
+            
+            lineptsx= lmrk.landmark(mm).dist*cosd(atan2d((lmrk.landmark(mm).pos(2)-x(2)),(lmrk.landmark(mm).pos(1)-x(1))));
+            lineptsy= lmrk.landmark(mm).dist*sind(atan2d((lmrk.landmark(mm).pos(2)-x(2)),(lmrk.landmark(mm).pos(1)-x(1))));
+            plot([x(1) lineptsx+x(1)],[x(2) lineptsy+x(2)],colors(mm));
+        end
+     end
+     
+     axis([-5,5,-5,5]);
+     % End Plot Junk
+     hold off
+     
+     idx=[];
 
-    
-    % Plot "unofficial" landmarks
-    idx = find(landmark_list(:,4) == 0);
-    scatter(landmark_list(idx,1),landmark_list(idx,2),[],[.5 .5 .5],'x');
-    
-    if(~isempty(observed_LL))
-        % Plot observed landmarks
-        scatter(landmark_list(idx2,1),landmark_list(idx2,2),'o','b');
-    end
-    
-    %Plot scan data
-    %scatter(landmark_list(:,1),landmark_list(:,2)); 
-    cartes_data = readCartesian(laserData); %read cartesian co-ordinates
-    rot = [cosd(x(3)) -sind(x(3)) x(1); sind(x(3)) cosd(x(3)) x(2); 0 0 1];
-    tmp = rot*[cartes_data,ones(length(cartes_data),1)]';
-    scatter(tmp(1,:),tmp(2,:),'magenta','.');
-    axis([-5 5 -5 5]);
-    
-    drawArrow=@(x,y,varargin) quiver (x(1),y(1),x(2)-x(1),y(2)-y(1),0,varargin{:}); hold on   
-    xx=x(1)+.5*cosd(x(3));
-    yy=(x(2)+.5*sind(x(3))); 
-    x1=[x(1) xx];
-    y1=[x(2) yy];
-    drawArrow(x1,y1,'linewidth',3,'color','r');
-    % End Plot Junk
-    %----------------------------------------------------------------------    
-    
-    hold off
-end
-
-
+ end
+ 
+ 
